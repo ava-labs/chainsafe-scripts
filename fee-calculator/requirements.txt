@@ -1,0 +1,3 @@
+pydantic
+web3
+requests

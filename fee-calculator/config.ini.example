@@ -1,0 +1,16 @@
+[fee_calculator]
+addresses = 0x7a27f96736F335a6B1a2582bA325BDBc09394A90,0xe167Efd9611EAFA2512A023E3289efFb3d72877b,0xD0f2898e49d941D6d479B381d3C8F0bd8d983b4c,0xb64b7B92e37D11c098AD4bf21D37FA49C0c0Ef45,0x3394b1F0f2614b87A6A44697236c10eccEa51B03
+multisig_only_addresses = 0x97475851fC6424287Ff8a1df05bbbe6bCEE8F686
+eth_start_block = 0
+eth_end_block = latest
+ava_start_block = 0
+ava_end_block = latest
+eth_bridge_address = 0x96B845aBE346b49135B865E5CeDD735FC448C3aD
+ava_bridge_address = 0x6460777cDa22AD67bBb97536FFC446D65761197E
+eth_multisig_address = 0xfD018E845DD2A5506C438438AFA88444Cf7A8D89
+ava_multisig_address = 0x751e9AD7DdA35EC5217fc2D1951a5FFB0617eafE
+eth_rpc_url = https://mainnet.infura.io/v3/<id>
+ava_rpc_url = <rpc_url>
+output_csv = True
+output_json = True
+output_stdout = True
