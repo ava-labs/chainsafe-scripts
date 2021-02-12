@@ -58,8 +58,9 @@ def fee_calculate(addresses: List[str], multisig_only: List[str],
     }
 
     all_users.update(multisig_only_users)
-
-    assert(sum(i for i in all_users.values()) == 1.0)
+    
+    # Remove assert
+    # assert(sum(i for i in all_users.values()) == 1.0)
 
     return all_users, total_gas
 
