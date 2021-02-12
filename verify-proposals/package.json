@@ -18,6 +18,7 @@
   "dependencies": {
     "@supercharge/promise-pool": "^1.6.0",
     "csv-writer": "^1.6.0",
+    "dotenv": "^8.2.0",
     "ethers": "^5.0.30"
   }
 }

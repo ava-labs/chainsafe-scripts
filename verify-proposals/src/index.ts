@@ -3,9 +3,15 @@ import PromisePool from '@supercharge/promise-pool';
 import fs from 'fs/promises';
 import { createObjectCsvWriter } from 'csv-writer';
 import { ObjectMap } from "csv-writer/src/lib/lang/object";
+import { config } from 'dotenv';
 
-const ethProvider = new ethers.providers.JsonRpcProvider("https://mainnet.infura.io/v3/f8a5ed81ee9940fdaa7d07ee801ba1ef");
-const avaProvider = new ethers.providers.JsonRpcProvider("https://avalanche--mainnet--rpc.datahub.figment.io/apikey/13b0a6af4b9e9f4406aafe275a5ed692/ext/bc/C/rpc");
+config();
+
+const ETH_PROVIDER = process.env.ETH_PROVIDER;
+const AVA_PROVIDER = process.env.AVA_PROVIDER;
+
+const ethProvider = new ethers.providers.JsonRpcProvider(ETH_PROVIDER);
+const avaProvider = new ethers.providers.JsonRpcProvider(AVA_PROVIDER);
 
 const ethChainId = 1;
 const avaChainId = 2;
@@ -21,7 +27,10 @@ const bridgeABI = [{"inputs":[{"internalType":"uint8","name":"chainID","type":"u
 const ethBridge = new ethers.Contract(ethBridgeAddress, bridgeABI, ethProvider);
 const avaBridge = new ethers.Contract(avaBridgeAddress, bridgeABI, avaProvider);
 
-async function findFailedProposals(originName: string, destinationName: string, originBridge: ethers.Contract, destinationBridge: ethers.Contract, originChangeID: number, destinationChainID: number, destinationHandler: string) {
+async function findFailedProposals(originName: string, destinationName: string, 
+                                   originBridge: ethers.Contract, destinationBridge: ethers.Contract, 
+                                   originChangeID: number, destinationChainID: number, 
+                                   destinationHandler: string) {
     const totalDeposits = Number((await originBridge._depositCounts(destinationChainID)).toString());
     let noinces = [...Array(totalDeposits).keys()];
 
@@ -29,12 +38,36 @@ async function findFailedProposals(originName: string, destinationName: string, 
         .withConcurrency(4)
         .for(noinces)
         .process(async noince => {
+            const originBridgeAddress = await originBridge.resolvedAddress
             const records = (await originBridge._depositRecords(noince, destinationChainID));
             const hash = ethers.utils.solidityKeccak256(["address", "bytes"], [destinationHandler, records]);
             const proposal = await destinationBridge.getProposal(originChangeID, noince, hash);
             
             if (proposal._resourceID == "0x0000000000000000000000000000000000000000000000000000000000000000")
                 return null;
+
+            const event = originBridge.filters.Deposit(null, null, noince);
+            const originEvents = await originBridge.queryFilter(event, 0, 'latest')
+
+            let originBlockNumber = "0"
+            if (originEvents.length == 0) {
+                originBlockNumber = "Deposit not found on Origin Chain";
+            } else if (originEvents.length > 1) {
+                originBlockNumber = "Multiple Deposit events with the noince " + noince + " found on the Origin Chain"; 
+            } else {
+                const originEvent = originEvents[0];
+                if (originEvent.args != null) {
+                    if (originEvent.args.resourceID != proposal._resourceID) {
+                        originBlockNumber = "Resource ID of Deposit event doesn't match Proposal, expected " + proposal._resourceID + " but got " + originEvent.args.resourceID;
+                    } else if (originEvent.args.destinationChainID != destinationChainID) {
+                        originBlockNumber = "destinationChainID in Deposit event doesn't match expected " + destinationChainID + " got " + originEvent.args.destinationChainID;
+                    } else {
+                        originBlockNumber = originEvent.blockNumber.toString();
+                    }
+                } else {
+                    originBlockNumber = originEvent.blockNumber.toString() + " (unverified)";
+                }
+            }
             
             if (proposal._status != 3) {
                 const yes_votes_string = proposal._yesVotes.join()
@@ -51,6 +84,7 @@ async function findFailedProposals(originName: string, destinationName: string, 
                     'proposal_no_votes': no_votes_string,
                     'proposal_status': proposal._status,
                     'proposal_proposed_block': proposal._proposedBlock.toString(),
+                    'origin_block_number': originBlockNumber,
                 }
             }
 
@@ -83,6 +117,7 @@ async function main() {
                 {id: 'proposal_no_votes', title: 'No Votes'},
                 {id: 'proposal_status', title: 'Status'},
                 {id: 'proposal_proposed_block', title: 'Proposed Block'},
+                {id: 'origin_block_number', title: 'Deposit Block Number'}
             ]
         });
 
