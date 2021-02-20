@@ -22,6 +22,8 @@ def get_all_transactions_by_address(address: str, explorer_url: str = 'https://c
         edges = results['data']['address']['transactions']['edges']
 
         for edge in edges:
+            if edge['node']['blockNumber'] is None:
+                continue  # Skip pending transactions
             transactions.append(edge['node'])
 
         last_cursor = results['data']['address']['transactions']['pageInfo']['endCursor']
