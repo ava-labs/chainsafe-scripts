@@ -1,42 +1,50 @@
 from typing import Optional
 
+from pydantic import BaseModel
+
 from avareporter.models import Transaction
 
 
 class AvaTransaction(Transaction):
-    blockNumber: str
+    block: str
     hash: str
+    createdAt: str
     nonce: str
-    fromAddressHash: str
-    toAddressHash: Optional[str]
-    value: str
-    gas: str
     gasPrice: str
-    gasUsed: str
-    error: Optional[str]
-    id: str
-    index: int
-    status: str
-    input: str
-    cumulativeGasUsed: str
-    createdContractAddressHash: Optional[str]
+    gasLimit: str
+    blockGasUsed: str
+    blockGasLimit: str
+    blockNonce: str
+    blockHash: str
+    recipient: str
+    value: str
+    input: Optional[str]
+    toAddr: str
+    fromAddr: str
+    v: str
+    r: str
+    s: str
+
+    @property
+    def block_number(self) -> str:
+        return self.block
+
+    @property
+    def gas_limit(self) -> str:
+        return self.blockGasLimit
+
+    @property
+    def cumulative_gas_used(self) -> str:
+        return self.gasLimit
+
+    @property
+    def gas_used(self) -> str:
+        return self.blockGasUsed
 
     @property
     def from_address(self) -> str:
-        return self.fromAddressHash.lower()
+        return self.fromAddr.lower()
 
     @property
     def to_address(self) -> str:
-        return self.toAddressHash.lower() if self.toAddressHash is not None else ''
-
-    @property
-    def tx_index(self) -> int:
-        return self.index
-
-    @property
-    def tx_status(self) -> str:
-        return self.status
-
-    @property
-    def contract_address(self) -> Optional[str]:
-        return self.createdContractAddressHash
+        return self.toAddr.lower() if self.toAddr is not None else ''

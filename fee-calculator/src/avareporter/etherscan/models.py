@@ -52,24 +52,28 @@ class EthTransaction(Transaction):
         }
 
     @property
+    def block_number(self) -> str:
+        return self.blockNumber
+
+    @property
+    def gas_limit(self) -> str:
+        return self.gas
+
+    @property
+    def cumulative_gas_used(self) -> str:
+        return self.cumulativeGasUsed
+
+    @property
+    def gas_used(self) -> str:
+        return self.gasUsed
+
+    @property
     def from_address(self) -> str:
         return self.from_.lower()
 
     @property
     def to_address(self) -> Optional[str]:
         return self.to.lower()
-
-    @property
-    def tx_index(self) -> int:
-        return self.transactionIndex
-
-    @property
-    def tx_status(self) -> str:
-        return self.txreceipt_status
-
-    @property
-    def contract_address(self) -> Optional[str]:
-        return self.contractAddress
 
 
 class EtherscanContractResult(EtherscanResult):

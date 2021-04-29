@@ -4,15 +4,27 @@ from pydantic import BaseModel
 
 
 class Transaction(BaseModel):
-    blockNumber: str
     hash: str
     nonce: str
     value: str
-    gas: str
     gasPrice: str
     input: str
-    cumulativeGasUsed: str
-    gasUsed: str
+
+    @property
+    def block_number(self) -> str:
+        raise NotImplemented()
+
+    @property
+    def gas_limit(self) -> str:
+        raise NotImplemented()
+
+    @property
+    def cumulative_gas_used(self) -> str:
+        raise NotImplemented()
+
+    @property
+    def gas_used(self) -> str:
+        raise NotImplemented()
 
     @property
     def from_address(self) -> str:
@@ -20,16 +32,4 @@ class Transaction(BaseModel):
 
     @property
     def to_address(self) -> Optional[str]:
-        raise NotImplemented()
-
-    @property
-    def tx_index(self) -> int:
-        raise NotImplemented()
-
-    @property
-    def tx_status(self) -> str:
-        raise NotImplemented()
-
-    @property
-    def contract_address(self) -> Optional[str]:
         raise NotImplemented()

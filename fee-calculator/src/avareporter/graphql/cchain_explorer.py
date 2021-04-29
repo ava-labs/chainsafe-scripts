@@ -1,43 +1,47 @@
 from typing import List, Optional
 
+import requests
+
 from avareporter.graphql import send_query
 from avareporter.graphql.models import AvaTransaction
 
 
-def get_all_transactions_by_address(address: str, explorer_url: str = 'https://cchain.explorer.avax.network/graphiql',
+def get_all_transactions_by_address(address: str, explorer_url: str = 'https://explorerapi.avax.network',
                                     start_block: int = -1, end_block: Optional[int] = None) -> List[AvaTransaction]:
-    items = 'input, blockNumber, createdContractAddressHash, cumulativeGasUsed, error, fromAddressHash, gas,' \
-            ' gasPrice, gasUsed, hash, id, index, nonce, status, toAddressHash, value'
+    if start_block > 0 and end_block is not None:
+        cursor = start_block
+        count = end_block - start_block
 
-    query = '{address(hash: "' + address + '") { transactions(first:5) { edges { cursor, node { ' + items + ' } } pageInfo { hasNextPage, endCursor } } } }'
+        results = []
+        while cursor < end_block:
+            current_start = cursor
+            current_end = current_start + count
 
-    has_results = True
-    transactions = []
-    while has_results:
-        results = send_query(explorer_url, query)
+            try:
+                tx = get_all_transactions_by_address_unhandled(address, explorer_url, current_start, current_end)
+                results.extend(tx)
 
-        if results['data']['address'] is None:
-            break
+                cursor += count
+            except KeyError:
+                count /= 2
+                continue
 
-        edges = results['data']['address']['transactions']['edges']
+        return results
+    else:
+        return get_all_transactions_by_address_unhandled(address, explorer_url, start_block, end_block)
 
-        for edge in edges:
-            if edge['node']['blockNumber'] is None:
-                continue  # Skip pending transactions
-            transactions.append(edge['node'])
 
-        last_cursor = results['data']['address']['transactions']['pageInfo']['endCursor']
-
-        has_results = results['data']['address']['transactions']['pageInfo']['hasNextPage']
-
-        query = '{address(hash: "' + address + '") { transactions(first:5, after:"' + last_cursor + '") { edges { cursor, node { ' + items + ' } } pageInfo { hasNextPage, endCursor } } } }'
+def get_all_transactions_by_address_unhandled(address: str, explorer_url: str = 'https://explorerapi.avax.network',
+                                    start_block: int = -1, end_block: Optional[int] = None) -> List[AvaTransaction]:
+    url = "{}/v2/ctransactions?address={}".format(explorer_url, address)
 
     if start_block > 0:
-        transactions = list(filter(lambda t: t['blockNumber'] >= start_block, transactions))
+        url += "&blockStart={}".format(start_block)
 
     if end_block is not None:
-        transactions = list(filter(lambda t: t['blockNumber'] <= end_block, transactions))
+        url += "&blockEnd={}".format(end_block)
 
-    transactions = list(map(lambda t: AvaTransaction(**t), transactions))
+    resp = requests.get(url)
+    data = resp.json()
 
-    return transactions
+    return list(map(lambda t: AvaTransaction(**t), data['Transactions']))

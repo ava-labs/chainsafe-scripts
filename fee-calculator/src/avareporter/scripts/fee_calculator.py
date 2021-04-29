@@ -41,26 +41,23 @@ def fee_calculate(addresses: List[str], multisig_only: List[str],
         multisig_transactions
     ))
 
-    total_gas = sum(int(t.gasUsed) for t in filtered_transactions + multisig_only_transactions)
+    total_gas = sum(int(t.gas_used) for t in filtered_transactions + multisig_only_transactions)
 
     all_users = {
-        address: sum(int(t.gasUsed) for t in
+        address: sum(int(t.gas_used) for t in
                                  filter(lambda t: t.from_address == address or t.to_address == address,
                                         filtered_transactions)) / total_gas
         for address in addresses
     }
 
     multisig_only_users = {
-        address: sum(int(t.gasUsed) for t in
+        address: sum(int(t.gas_used) for t in
                                  filter(lambda t: t.from_address == address or t.to_address == address,
                                         multisig_only_transactions)) / total_gas
         for address in multisig_only
     }
 
     all_users.update(multisig_only_users)
-    
-    # Remove assert
-    # assert(sum(i for i in all_users.values()) == 1.0)
 
     return all_users, total_gas
 
