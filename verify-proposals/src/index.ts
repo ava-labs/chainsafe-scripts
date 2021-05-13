@@ -45,6 +45,7 @@ async function findFailedProposals(originName: string, destinationName: string,
             const originBridgeAddress = await originBridge.resolvedAddress
             console.log("[" + originName + " -> " + destinationName + " | Noince " + noince + "] Grabbing deposit record for " + noince);
             const records = (await originBridge._depositRecords(noince, destinationChainID));
+            console.log("[" + originName + " -> " + destinationName + " | Noince " + noince + "] Got record as " + records);
             const hash = ethers.utils.solidityKeccak256(["address", "bytes"], [destinationHandler, records]);
             console.log("[" + originName + " -> " + destinationName + " | Noince " + noince + "] Grabbing proposal with hash " + hash)
             const proposal = await destinationBridge.getProposal(originChangeID, noince, hash);
