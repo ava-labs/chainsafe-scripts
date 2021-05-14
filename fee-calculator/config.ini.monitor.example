@@ -1,0 +1,14 @@
+[monitor]
+eth_bridge_address = 0x96B845aBE346b49135B865E5CeDD735FC448C3aD
+ava_bridge_address = 0x6460777cDa22AD67bBb97536FFC446D65761197E
+eth_rpc_url = <FILL IN>
+ava_rpc_url = <FILL IN>
+sleep_time = 10
+eth_chain_id = 1
+ava_chain_id = 2
+eth_handler = 0xdAC7Bb7Ce4fF441A235F08408e632FA1D799A147
+ava_handler = 0x6147F5a1a4eEa5C529e2F375Bd86f8F58F8Bc990
+worker_count = 5
+use_child_processes = True
+active_proposal_block_alert = 100
+passed_proposal_block_alert = 100
