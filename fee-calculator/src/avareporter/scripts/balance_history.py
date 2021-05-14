@@ -3,7 +3,7 @@ import io
 from pathlib import Path
 
 from avareporter.cli import script
-from avareporter.abis import multisig, bridge_abi, erc20, handler
+from avareporter.abis import multisig, bridge_abi, erc20_abi, handler_abi
 from web3 import Web3
 import avareporter.etherscan as es
 import json
@@ -53,9 +53,9 @@ def execute():
     eth_web3 = Web3(Web3.HTTPProvider(eth_rpc_url))
     ava_web3 = Web3(Web3.HTTPProvider(ava_rpc_url))
 
-    usdt = eth_web3.eth.contract(address=Web3.toChecksumAddress('0xdac17f958d2ee523a2206206994597c13d831ec7'), abi=erc20)
+    usdt = eth_web3.eth.contract(address=Web3.toChecksumAddress('0xdac17f958d2ee523a2206206994597c13d831ec7'), abi=erc20_abi)
     eth_bridge = eth_web3.eth.contract(address=Web3.toChecksumAddress(eth_bridge_address), abi=bridge_abi)
-    eth_handler = eth_web3.eth.contract(address=Web3.toChecksumAddress('0x6147F5a1a4eEa5C529e2F375Bd86f8F58F8Bc990'), abi=handler)
+    eth_handler = eth_web3.eth.contract(address=Web3.toChecksumAddress('0x6147F5a1a4eEa5C529e2F375Bd86f8F58F8Bc990'), abi=handler_abi)
 
     transfer_event_filter = usdt.events.Transfer.createFilter(fromBlock=11688193, toBlock='latest', argument_filters={
         'to': Web3.toChecksumAddress('0xdAC7Bb7Ce4fF441A235F08408e632FA1D799A147')
@@ -155,7 +155,7 @@ def execute():
                 withdrawals[token] += amount
 
     for token, value in withdrawals.items():
-        token_contract = eth_web3.eth.contract(address=token, abi=erc20)
+        token_contract = eth_web3.eth.contract(address=token, abi=erc20_abi)
 
         name = token_contract.functions.name().call()
         symbol = token_contract.functions.symbol().call()
