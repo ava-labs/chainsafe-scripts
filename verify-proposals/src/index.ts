@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import { createObjectCsvWriter } from 'csv-writer';
 import { ObjectMap } from "csv-writer/src/lib/lang/object";
 import { config } from 'dotenv';
+import { abi as handler_abi } from './handler.abi.json'
 
 config();
 
@@ -65,6 +66,8 @@ async function findFailedProposals(originName: string, destinationName: string,
             const originEvents = await originBridge.queryFilter(event, 0, 'latest')
 
             let originBlockNumber = "0"
+            let depositTxHash = ''
+            let depositTx = null;
             if (originEvents.length == 0) {
                 originBlockNumber = "Deposit not found on Origin Chain";
                 console.log("[" + originName + " -> " + destinationName + " | Noince " + noince + "] No Deposit event found")
@@ -73,6 +76,8 @@ async function findFailedProposals(originName: string, destinationName: string,
                 console.log("[" + originName + " -> " + destinationName + " | Noince " + noince + "] Multiple Deposit events found with same noince")
             } else {
                 const originEvent = originEvents[0];
+                depositTx = await originEvent.getTransaction();
+                depositTxHash = depositTx.hash;
                 if (originEvent.args != null) {
                     if (originEvent.args.resourceID != proposal._resourceID) {
                         originBlockNumber = "Resource ID of Deposit event doesn't match Proposal, expected " + proposal._resourceID + " but got " + originEvent.args.resourceID;
@@ -100,6 +105,36 @@ async function findFailedProposals(originName: string, destinationName: string,
                 const yes_votes_string = proposal._yesVotes.join()
                 const no_votes_string = proposal._noVotes.join()
 
+                if (proposal._status == 4) {
+                    if (depositTx === null) {
+                        console.log("[" + originName + " -> " + destinationName + " | Noince " + noince + "] Expired proposal found, but could not get deposit event");
+                        return null;
+                    }
+
+                    let m = '0xfD018E845DD2A5506C438438AFA88444Cf7A8D89';
+                    let b = '0x96B845aBE346b49135B865E5CeDD735FC448C3aD';
+
+                    let handlerAddress = await originBridge._resourceIDToHandlerAddress(proposal._resourceID);
+
+                    let provider;
+                    if (originChangeID == ethChainId) {
+                        provider = ethProvider;
+                    } else {
+                        provider = avaProvider;
+                    }
+
+                    let originHandler = new ethers.Contract(handlerAddress, handler_abi, provider);
+
+                    let depositRecord = await originHandler.getDepositRecord()
+
+                    return {
+                        'proposal_status': proposal._status,
+                        'origin_block_number': originBlockNumber,
+                        'deposit_tx': depositTx,
+                        'command': 'cb-sol-cli admin safe-withdraw --url $CBM_URL --privateKey $CB_PK_OWNER --gasPrice gasPrice --multiSig ' + m + ' --bridge ' + b + ' --tokenContract '
+                    }
+                }
+
                 return {
                     'origin': originName,
                     'destination': destinationName,
@@ -112,6 +147,7 @@ async function findFailedProposals(originName: string, destinationName: string,
                     'proposal_status': proposal._status,
                     'proposal_proposed_block': proposal._proposedBlock.toString(),
                     'origin_block_number': originBlockNumber,
+                    'deposit_tx': depositTxHash
                 }
             }
 
@@ -148,7 +184,8 @@ async function main() {
                 {id: 'proposal_no_votes', title: 'No Votes'},
                 {id: 'proposal_status', title: 'Status'},
                 {id: 'proposal_proposed_block', title: 'Proposed Block'},
-                {id: 'origin_block_number', title: 'Deposit Block Number'}
+                {id: 'origin_block_number', title: 'Deposit Block Number'},
+                {id: 'deposit_tx', title: 'Deposit Transaction'}
             ]
         });
 
