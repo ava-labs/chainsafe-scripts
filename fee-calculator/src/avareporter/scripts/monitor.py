@@ -6,7 +6,7 @@ from enum import Enum
 from functools import partial
 from multiprocessing import Pool
 from multiprocessing.pool import ThreadPool
-from typing import List, Set, Dict, Optional
+from typing import List, Set, Dict, Optional, Any
 from pathlib import Path
 
 import requests
@@ -16,42 +16,12 @@ from tqdm.contrib.concurrent import process_map, thread_map
 from hexbytes import HexBytes
 from web3.contract import Contract
 
-from avareporter.abis import bridge_abi
+from avareporter.abis import bridge_abi, handler_abi, erc20_abi
 from web3 import Web3
 from avareporter.cli import script
 import logging
 from logging.config import fileConfig
 from logging.config import dictConfig
-
-
-# temp because cant read file
-config_data = """
-[monitor]
-addresses = 0x8c14EdCC7bFdDB43a4d6Cb36c25c3B4F30D8B121,0x5069Ac8c8aFe3cF32e889F2f887FF8549593044f,0x773EBE37332aF018b4A2FCAe4ECA0d747d0722d3,0xFF1941fb64A91568fC69Fe8f723f19Fa584d1Fc5,0x83e461899d4C6E28E26576b717a22fE9944ec852
-multisig_only_addresses = 0xf77ACF8b76345CeFD22324dfB3404b81D982574d,0xf0414c9846c25894D89DA41267f1C21e6E829164,0x03EE42Ed02fDDC2345aB7b64299fdA4FA817C4AD,0x97475851fc6424287ff8a1df05bbbe6bcee8f686,0x24dA883FeD6FE099EdFe305f1906b58FEC6B8903
-eth_start_block = 0
-eth_end_block   = latest
-ava_start_block = 1113166
-ava_end_block   = 1305926
-eth_bridge_address = 0x96B845aBE346b49135B865E5CeDD735FC448C3aD
-ava_bridge_address = 0x6460777cDa22AD67bBb97536FFC446D65761197E
-eth_multisig_address = 0xfD018E845DD2A5506C438438AFA88444Cf7A8D89
-ava_multisig_address = 0x751e9AD7DdA35EC5217fc2D1951a5FFB0617eafE
-output_csv = True
-output_json = True
-output_stdout = True
-eth_rpc_url = https://mainnet.infura.io/v3/f8a5ed81ee9940fdaa7d07ee801ba1ef
-ava_rpc_url = https://avalanche--mainnet--rpc.datahub.figment.io/apikey/13b0a6af4b9e9f4406aafe275a5ed692/ext/bc/C/rpc
-sleep_time = 10
-eth_chain_id = 1
-ava_chain_id = 2
-eth_handler = 0xdAC7Bb7Ce4fF441A235F08408e632FA1D799A147
-ava_handler = 0x6147F5a1a4eEa5C529e2F375Bd86f8F58F8Bc990
-worker_count = 5
-use_child_processes = True
-active_proposal_block_alert = 100
-passed_proposal_block_alert = 100
-"""
 
 CHAIN_NAMES = {
     1: 'Ethereum',
@@ -60,9 +30,10 @@ CHAIN_NAMES = {
 
 
 EMPTY_BYTES32 = b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 
-class ProposalStatus(Enum):
+class ProposalStatus(int, Enum):
     Inactive = 0
     Active = 1
     Passed = 2
@@ -82,11 +53,33 @@ class Proposal:
     deposit_block: Optional[int]
     deposit_transaction_hash: Optional[str]
 
+    def as_dict(self):
+        return asdict(self)
+
     def __hash__(self):
         return self.deposit_transaction_hash
 
     def __cmp__(self, other: 'Proposal'):
         return other.deposit_transaction_hash == self.deposit_transaction_hash
+
+
+class AlertType(str, Enum):
+    ProposalExpired = 'proposal_expired'
+    ProposalNotVoted = 'proposal_not_voted'
+    ProposalNotExecuted = 'proposal_not_executed'
+    Imbalance = 'imbalance'
+    Internal = 'internal'
+    ProposalVoted = 'proposal_voted'
+
+
+@dataclass
+class Alert:
+    data: Optional[Any]
+    message: str
+    alert_type: AlertType
+
+    def as_dict(self):
+        return asdict(self)
 
 
 @dataclass
@@ -122,19 +115,22 @@ class Bridge:
 
 @dataclass
 class MonitorState:
-    active_proposals: Dict[int, List[Proposal]]
-    passed_proposals: Dict[int, List[Proposal]]
+    active_proposals: Dict[str, List[Proposal]]
+    passed_proposals: Dict[str, List[Proposal]]
+    imbalance_alerts: Dict[str, int]
+    resource_ids: List[str]
     ava_deposit_count: int = 0
     eth_deposit_count: int = 0
-    backup_count: int = 0
 
     def save(self):
         save_state = Path('.state')
         if save_state.exists():
-            backup_state = Path(f'.state.backup.{self.backup_count}')
-            save_state.rename(backup_state)
+            backup_state = Path(f'.state.backup')
 
-            self.backup_count += 1
+            if backup_state.exists():
+                backup_state.unlink()
+
+            save_state.rename(backup_state)
 
         with open(str(save_state.absolute()), mode='w') as f:
             json.dump(asdict(self), f)
@@ -148,20 +144,45 @@ class State:
     config: configparser.ConfigParser
 
 
+class BytesEncoder(json.JSONEncoder):
+    def default(self, o: Any) -> Any:
+        if isinstance(o, HexBytes):
+            return o.hex()
+        elif isinstance(o, bytes):
+            return HexBytes(o).hex()
+        return json.JSONEncoder.default(self, o)
+
+
 def load_or_new_state() -> MonitorState:
     save_state = Path('.state')
     if not save_state.exists():
-        return MonitorState(watched_proposals=set(), watching_proposals=list())
+        return MonitorState(active_proposals={
+            '1': [],
+            '2': []
+        }, passed_proposals={
+            '1': [],
+            '2': []
+        }, resource_ids=[], imbalance_alerts={})
 
     with open(str(save_state.absolute()), mode='r') as f:
         data = json.load(f)
 
+    if 'imbalance_alerts' not in data:
+        data['imbalance_alerts'] = {}
+
     return MonitorState(**data)
+
+
+def log_alert(message: str, atype: AlertType, related_object: Optional[Any] = None):
+    logger = logging.getLogger('alert')
+
+    alert = Alert(related_object, message, atype)
+
+    logger.error(json.dumps(alert.as_dict(), cls=BytesEncoder))
 
 
 def fetch_proposal(origin_bridge: Bridge, destination_bridge: Bridge, nonce: int) -> Proposal:
     try:
-        logger = logging.getLogger('fetch_proposal')
         records = origin_bridge.contract.functions._depositRecords(nonce, destination_bridge.chain_id).call()
 
         hash = Web3.solidityKeccak(['address', 'bytes'], [destination_bridge.handler, records])
@@ -174,12 +195,24 @@ def fetch_proposal(origin_bridge: Bridge, destination_bridge: Bridge, nonce: int
 
         events = event_filter.get_all_entries()
 
+        temp_proposal = Proposal(
+            resource_id=raw_proposal[0],
+            data_hash=raw_proposal[1],
+            yes_votes=raw_proposal[2],
+            no_votes=raw_proposal[3],
+            status=ProposalStatus(raw_proposal[4]),
+            proposed_block=raw_proposal[5],
+            deposit_nonce=nonce,
+            deposit_block=None,
+            deposit_transaction_hash=None
+        )
+
         if len(events) == 0:
-            logger.warning(f'Deposit {nonce} not found on Origin Chain {CHAIN_NAMES[origin_bridge.chain_id]}')
+            log_alert(f'Deposit {nonce} not found on Origin Chain {CHAIN_NAMES[origin_bridge.chain_id]}', AlertType.Internal, temp_proposal)
             deposit_block = None
             deposit_transaction_hash = None
         elif len(events) > 1:
-            logger.warning(f'Multiple Deposit events with the nonce {nonce} found on Origin Chain {CHAIN_NAMES[origin_bridge.chain_id]}')
+            log_alert(f'Multiple Deposit events with the nonce {nonce} found on Origin Chain {CHAIN_NAMES[origin_bridge.chain_id]}', AlertType.Internal, temp_proposal)
             deposit_block = None
             deposit_transaction_hash = None
         else:
@@ -187,18 +220,18 @@ def fetch_proposal(origin_bridge: Bridge, destination_bridge: Bridge, nonce: int
 
             if event.args is not None:
                 if event.args.resourceID != raw_proposal[0]:
-                    logger.warning(f'Deposit event found, but proposal resource ID mismatch')
+                    log_alert(f'Deposit event found, but proposal resource ID mismatch', AlertType.Internal, temp_proposal)
                     deposit_block = None
                     deposit_transaction_hash = None
                 elif event.args.destinationChainID != destination_bridge.chain_id:
-                    logger.warning(f'Deposit event found, but proposal resource ID mismatch')
+                    log_alert(f'Deposit event found, but proposal resource ID mismatch', AlertType.Internal, temp_proposal)
                     deposit_block = None
                     deposit_transaction_hash = None
                 else:
                     deposit_block = event.blockNumber
                     deposit_transaction_hash = event.transactionHash
             else:
-                logger.warning(f'Deposit event found, but unverified (no data in event)')
+                log_alert(f'Deposit event found, but unverified (no data in event)', AlertType.Internal, temp_proposal)
                 deposit_block = event.blockNumber
                 deposit_transaction_hash = event.transactionHash
 
@@ -221,7 +254,7 @@ def fetch_proposal(origin_bridge: Bridge, destination_bridge: Bridge, nonce: int
         raise e
 
 
-def find_all_new_proposals(current_state: State) -> Dict[int, List[Proposal]]:
+def find_all_new_proposals(current_state: State) -> Dict[str, List[Proposal]]:
     logger = logging.getLogger('fetch_new_proposals')
 
     eth_bridge = current_state.eth_bridge
@@ -230,25 +263,25 @@ def find_all_new_proposals(current_state: State) -> Dict[int, List[Proposal]]:
     eth_bridge_contract = eth_bridge.contract
     ava_bridge_contract = ava_bridge.contract
 
-    eth_chain_id = eth_bridge.chain_id
-    ava_chain_id = ava_bridge.chain_id
+    eth_chain_id = str(eth_bridge.chain_id)
+    ava_chain_id = str(ava_bridge.chain_id)
 
     state = current_state.monitor
 
     worker_count = int(current_state.config['monitor']['worker_count'])
     use_multiprocessing = bool(current_state.config['monitor']['use_child_processes'])
 
-    map_func = process_map if use_multiprocessing else thread_map
+    PoolClass = Pool if use_multiprocessing else ThreadPool
 
     logger.debug('Grabbing deposit counts')
 
     # eth -> ava
-    ava_deposit_count = eth_bridge_contract.functions._depositCounts(ava_chain_id).call()
+    ava_deposit_count = eth_bridge_contract.functions._depositCounts(ava_bridge.chain_id).call()
     # ava -> eth
-    eth_deposit_count = ava_bridge_contract.functions._depositCounts(eth_chain_id).call()
+    eth_deposit_count = ava_bridge_contract.functions._depositCounts(eth_bridge.chain_id).call()
 
-    logger.info('ETH -> AVA Deposits: ' + str(ava_deposit_count))
-    logger.info('AVA -> ETH Deposits: ' + str(eth_deposit_count))
+    logger.debug('ETH -> AVA Deposits: ' + str(ava_deposit_count))
+    logger.debug('AVA -> ETH Deposits: ' + str(eth_deposit_count))
 
     proposals = {
         eth_chain_id: [],
@@ -257,65 +290,98 @@ def find_all_new_proposals(current_state: State) -> Dict[int, List[Proposal]]:
     if state.ava_deposit_count > ava_deposit_count:
         logger.error('Saved state has more deposit counts than what blockchain reported!')
     elif state.ava_deposit_count < ava_deposit_count:
-        new_eth_proposals = map_func(partial(fetch_proposal, eth_bridge, ava_bridge),
-                                     range(state.ava_deposit_count, ava_deposit_count),
-                                     max_workers=worker_count, chunksize=50)
+        count = ava_deposit_count - state.ava_deposit_count
+        chunksize = int(count / worker_count)
 
-        proposals[eth_chain_id] = new_eth_proposals
+        if chunksize < 5:
+            PoolClass = ThreadPool
+
+        if chunksize >= 1:
+            with PoolClass(worker_count) as p:
+                new_eth_proposals = p.map(partial(fetch_proposal, eth_bridge, ava_bridge),
+                                          range(state.ava_deposit_count, ava_deposit_count),
+                                          chunksize=chunksize)
+
+                proposals[eth_chain_id] = new_eth_proposals
+        else:
+            proposals[eth_chain_id] = []
+            for nonce in range(state.ava_deposit_count, ava_deposit_count):
+                proposals[eth_chain_id].append(fetch_proposal(eth_bridge, ava_bridge, nonce))
 
     if state.eth_deposit_count > eth_deposit_count:
         logger.error('Saved state has more deposit counts than what blockchain reported!')
     elif state.eth_deposit_count < eth_deposit_count:
-        new_ava_proposals = map_func(partial(fetch_proposal, ava_bridge, eth_bridge),
-                                     range(state.eth_deposit_count, eth_deposit_count),
-                                     max_workers=worker_count, chunksize=50)
-        proposals[ava_chain_id] = new_ava_proposals
+        count = ava_deposit_count - state.ava_deposit_count
+        chunksize = int(count / worker_count)
+        if chunksize < 5:
+            PoolClass = ThreadPool
+
+        if chunksize >= 1:
+            with PoolClass(worker_count) as p:
+                new_ava_proposals = p.map(partial(fetch_proposal, ava_bridge, eth_bridge),
+                                          range(state.eth_deposit_count, eth_deposit_count),
+                                          chunksize=chunksize)
+                proposals[ava_chain_id] = new_ava_proposals
+        else:
+            proposals[ava_chain_id] = []
+            for nonce in range(state.eth_deposit_count, eth_deposit_count):
+                proposals[ava_chain_id].append(fetch_proposal(ava_bridge, eth_bridge, nonce))
 
     state.ava_deposit_count = ava_deposit_count
     state.eth_deposit_count = eth_deposit_count
 
+    # Save new resource ids
+    for proposal in proposals[eth_chain_id]:
+        if proposal.resource_id.hex() not in state.resource_ids:
+            state.resource_ids.append(proposal.resource_id.hex())
+
+    for proposal in proposals[ava_chain_id]:
+        if proposal.resource_id.hex() not in state.resource_ids:
+            state.resource_ids.append(proposal.resource_id.hex())
+
     return proposals
 
 
-def expired_proposals(current_state: State, proposals: Dict[int, List[Proposal]]):
+def expired_proposals(current_state: State, proposals: Dict[str, List[Proposal]]):
     logger = logging.getLogger('expired_proposals')
 
     eth_bridge = current_state.eth_bridge
     ava_bridge = current_state.ava_bridge
 
-    eth_chain_id = eth_bridge.chain_id
-    ava_chain_id = ava_bridge.chain_id
+    eth_chain_id = str(eth_bridge.chain_id)
+    ava_chain_id = str(ava_bridge.chain_id)
 
     logger.debug('Searching for expired proposals on Ethereum')
 
     for proposal in proposals[eth_chain_id]:
         if proposal.status == ProposalStatus.Cancelled:
-            logger.warning(f'[Ethereum] Proposal Expired; Deposit Block: {proposal.deposit_block} '
-                           f'Deposit Transaction: {proposal.deposit_transaction_hash} '
-                           f'Proposed Block: {proposal.proposed_block} '
-                           f'Resource ID: {proposal.resource_id.hex()} Data Hash: {proposal.data_hash.hex()} '
-                           f'Yes Votes: {len(proposal.yes_votes)} No Votes: {len(proposal.no_votes)}')
-
+            log_alert(f'[Ethereum] Proposal Expired; Deposit Block: {proposal.deposit_block} '
+                      f'Deposit Transaction: {proposal.deposit_transaction_hash} '
+                      f'Proposed Block: {proposal.proposed_block} '
+                      f'Resource ID: {proposal.resource_id.hex()} Data Hash: {proposal.data_hash.hex()} '
+                      f'Yes Votes: {len(proposal.yes_votes)} No Votes: {len(proposal.no_votes)}',
+                      AlertType.ProposalExpired, proposal)
 
     logger.debug('Searching for expired proposals on Avalanche')
 
     for proposal in proposals[ava_chain_id]:
         if proposal.status == ProposalStatus.Cancelled:
-            logger.warning(f'[Avalanche] Proposal Expired; Deposit Block: {proposal.deposit_block} '
-                           f'Deposit Transaction: {proposal.deposit_transaction_hash} '
-                           f'Proposed Block: {proposal.proposed_block} '
-                           f'Resource ID: {proposal.resource_id.hex()} Data Hash: {proposal.data_hash.hex()} '
-                           f'Yes Votes: {len(proposal.yes_votes)} No Votes: {len(proposal.no_votes)}')
+            log_alert(f'[Avalanche] Proposal Expired; Deposit Block: {proposal.deposit_block} '
+                      f'Deposit Transaction: {proposal.deposit_transaction_hash} '
+                      f'Proposed Block: {proposal.proposed_block} '
+                      f'Resource ID: {proposal.resource_id.hex()} Data Hash: {proposal.data_hash.hex()} '
+                      f'Yes Votes: {len(proposal.yes_votes)} No Votes: {len(proposal.no_votes)}',
+                      AlertType.ProposalExpired, proposal)
 
 
-def watch_active_proposals(current_state: State, proposals: Dict[int, List[Proposal]]):
+def watch_active_proposals(current_state: State, proposals: Dict[str, List[Proposal]]):
     logger = logging.getLogger('watch_active_proposals')
 
     eth_bridge = current_state.eth_bridge
     ava_bridge = current_state.ava_bridge
 
-    eth_chain_id = eth_bridge.chain_id
-    ava_chain_id = ava_bridge.chain_id
+    eth_chain_id = str(eth_bridge.chain_id)
+    ava_chain_id = str(ava_bridge.chain_id)
 
     logger.debug('Searching for new active proposals on Ethereum')
 
@@ -330,14 +396,14 @@ def watch_active_proposals(current_state: State, proposals: Dict[int, List[Propo
             current_state.monitor.active_proposals[ava_chain_id].append(proposal)
 
 
-def watch_passed_proposals(current_state: State, proposals: Dict[int, List[Proposal]]):
+def watch_passed_proposals(current_state: State, proposals: Dict[str, List[Proposal]]):
     logger = logging.getLogger('watch_passed_proposals')
 
     eth_bridge = current_state.eth_bridge
     ava_bridge = current_state.ava_bridge
 
-    eth_chain_id = eth_bridge.chain_id
-    ava_chain_id = ava_bridge.chain_id
+    eth_chain_id = str(eth_bridge.chain_id)
+    ava_chain_id = str(ava_bridge.chain_id)
 
     logger.debug('Searching for new passed proposals on Ethereum')
 
@@ -363,43 +429,55 @@ def check_active_proposals(current_state: State):
     eth_bridge = current_state.eth_bridge
     ava_bridge = current_state.ava_bridge
 
-    eth_chain_id = eth_bridge.chain_id
-    ava_chain_id = ava_bridge.chain_id
+    eth_chain_id = str(eth_bridge.chain_id)
+    ava_chain_id = str(ava_bridge.chain_id)
 
     eth_latest_block = current_state.eth_bridge.contract.web3.eth.block_number
     ava_latest_block = current_state.ava_bridge.contract.web3.eth.block_number
 
-    logger.debug('Checking active Ethereum proposals')
+    if len(current_state.monitor.active_proposals[eth_chain_id]) > 0:
+        logger.debug('Checking active Ethereum proposals')
 
-    for proposal in current_state.monitor.active_proposals[eth_chain_id][:]:
-        current_proposal_state = fetch_proposal(current_state.eth_bridge, current_state.ava_bridge, proposal.deposit_nonce)
+        for proposal in current_state.monitor.active_proposals[eth_chain_id][:]:
+            current_proposal_state = fetch_proposal(current_state.eth_bridge, current_state.ava_bridge, proposal.deposit_nonce)
 
-        if current_proposal_state.status != proposal.status:
-            current_state.monitor.active_proposals[eth_chain_id].remove(proposal)
-            if current_proposal_state.status == ProposalStatus.Passed:
-                current_state.monitor.passed_proposals[eth_chain_id].append(current_proposal_state)
-            continue
+            if current_proposal_state.status != proposal.status:
+                current_state.monitor.active_proposals[eth_chain_id].remove(proposal)
+                if current_proposal_state.status == ProposalStatus.Passed:
+                    current_state.monitor.passed_proposals[eth_chain_id].append(current_proposal_state)
+                continue
 
-        block_elapsed = eth_latest_block - current_proposal_state.proposed_block
+            block_elapsed = eth_latest_block - current_proposal_state.proposed_block
 
-        if block_elapsed >= active_proposal_block_alert:
-            logger.warning(f'[Ethereum] Proposal has remained active for {block_elapsed} blocks')
+            if block_elapsed >= active_proposal_block_alert:
+                log_alert(f'[Ethereum] Proposal has remained active for {block_elapsed} blocks',
+                          AlertType.ProposalNotVoted, proposal)
+            else:
+                logger.debug(f"Proposal has remained pass for {block_elapsed} blocks")
+    else:
+        logger.debug("Not watching any Ethereum proposals")
 
-    logger.debug('Checking active Avalanche proposals')
+    if len(current_state.monitor.active_proposals[ava_chain_id]) > 0:
+        logger.debug('Checking active Avalanche proposals')
 
-    for proposal in current_state.monitor.active_proposals[ava_chain_id][:]:
-        current_proposal_state = fetch_proposal(current_state.ava_bridge, current_state.eth_bridge, proposal.deposit_nonce)
+        for proposal in current_state.monitor.active_proposals[ava_chain_id][:]:
+            current_proposal_state = fetch_proposal(current_state.ava_bridge, current_state.eth_bridge, proposal.deposit_nonce)
 
-        if current_proposal_state.status != proposal.status:
-            current_state.monitor.active_proposals[ava_chain_id].remove(proposal)
-            if current_proposal_state.status == ProposalStatus.Passed:
-                current_state.monitor.passed_proposals[ava_chain_id].append(current_proposal_state)
-            continue
+            if current_proposal_state.status != proposal.status:
+                current_state.monitor.active_proposals[ava_chain_id].remove(proposal)
+                if current_proposal_state.status == ProposalStatus.Passed:
+                    current_state.monitor.passed_proposals[ava_chain_id].append(current_proposal_state)
+                continue
 
-        block_elapsed = ava_latest_block - current_proposal_state.proposed_block
+            block_elapsed = ava_latest_block - current_proposal_state.proposed_block
 
-        if block_elapsed >= active_proposal_block_alert:
-            logger.warning(f'[Avalanche] Proposal has remained active for {block_elapsed} blocks')
+            if block_elapsed >= active_proposal_block_alert:
+                log_alert(f'[Avalanche] Proposal has remained active for {block_elapsed} blocks',
+                          AlertType.ProposalNotVoted, proposal)
+            else:
+                logger.debug(f"Proposal has remained pass for {block_elapsed} blocks")
+    else:
+        logger.debug("Not watching any Avalanche proposals")
 
 
 def check_passed_proposals(current_state: State):
@@ -410,43 +488,154 @@ def check_passed_proposals(current_state: State):
     eth_bridge = current_state.eth_bridge
     ava_bridge = current_state.ava_bridge
 
-    eth_chain_id = eth_bridge.chain_id
-    ava_chain_id = ava_bridge.chain_id
+    eth_chain_id = str(eth_bridge.chain_id)
+    ava_chain_id = str(ava_bridge.chain_id)
 
     eth_latest_block = current_state.eth_bridge.contract.web3.eth.block_number
     ava_latest_block = current_state.ava_bridge.contract.web3.eth.block_number
 
-    logger.debug('Checking passed Ethereum proposals')
+    if len(current_state.monitor.passed_proposals[eth_chain_id]) > 0:
+        logger.debug('Checking passed Ethereum proposals')
 
-    for proposal in current_state.monitor.passed_proposals[eth_chain_id][:]:
-        current_proposal_state = fetch_proposal(current_state.eth_bridge, current_state.ava_bridge, proposal.deposit_nonce)
+        for proposal in current_state.monitor.passed_proposals[eth_chain_id][:]:
+            current_proposal_state = fetch_proposal(current_state.eth_bridge, current_state.ava_bridge, proposal.deposit_nonce)
 
-        if current_proposal_state.status != proposal.status:
-            current_state.monitor.passed_proposals[eth_chain_id].remove(proposal)
+            if current_proposal_state.status != proposal.status:
+                current_state.monitor.passed_proposals[eth_chain_id].remove(proposal)
+                continue
+
+            block_elapsed = eth_latest_block - current_proposal_state.proposed_block
+
+            if block_elapsed >= passed_proposal_block_alert:
+                log_alert(f'[Ethereum] Proposal has remained passed for {block_elapsed} blocks',
+                          AlertType.ProposalExpired, proposal)
+            else:
+                logger.debug(f"Proposal has remained pass for {block_elapsed} blocks")
+    else:
+        logger.debug("Not watching any Ethereum proposals")
+
+    if len(current_state.monitor.passed_proposals[ava_chain_id]) > 0:
+        logger.debug('Checking passed Avalanche proposals')
+
+        for proposal in current_state.monitor.passed_proposals[ava_chain_id][:]:
+            current_proposal_state = fetch_proposal(current_state.ava_bridge, current_state.eth_bridge, proposal.deposit_nonce)
+
+            if current_proposal_state.status != proposal.status:
+                current_state.monitor.passed_proposals[ava_chain_id].remove(proposal)
+                continue
+
+            block_elapsed = ava_latest_block - current_proposal_state.proposed_block
+
+            if block_elapsed >= passed_proposal_block_alert:
+                log_alert(f'[Avalanche] Proposal has remained passed for {block_elapsed} blocks',
+                          AlertType.ProposalExpired, proposal)
+            else:
+                logger.debug(f"Proposal has remained pass for {block_elapsed} blocks")
+    else:
+        logger.debug("Not watching any Avalanche proposals")
+
+
+def check_vote_event(state: State, event_filter):
+    for event in event_filter.get_new_entries():
+        nonce = event.args.depositNonce
+        origin = event.args.originChainID
+        destination = 1 if origin == 2 else 2
+
+        origin_bridge = state.eth_bridge if origin == 1 else state.ava_bridge
+        dst_bridge = state.eth_bridge if destination == 1 else state.ava_bridge
+
+        proposal = fetch_proposal(origin_bridge, dst_bridge, nonce)
+
+        log_alert('New vote for proposal', AlertType.ProposalVoted, proposal)
+
+
+def check_for_imbalances(current_state: State):
+    tolerance_config_file = Path('imbalance.json')
+    if tolerance_config_file.exists():
+        with open(str(tolerance_config_file.absolute()), mode='r') as f:
+            tolerances = json.load(f)
+    else:
+        tolerances = {}
+
+    eth_web3 = current_state.eth_bridge.contract.web3
+    ava_web3 = current_state.ava_bridge.contract.web3
+    for resource_id in current_state.monitor.resource_ids:
+        if resource_id == HexBytes(EMPTY_BYTES32).hex()[2:]:
             continue
 
-        block_elapsed = eth_latest_block - current_proposal_state.proposed_block
+        tolerance = tolerances.get(resource_id, 0)
+        tolerance = tolerances.get('0x'+resource_id, tolerance)
 
-        if block_elapsed >= passed_proposal_block_alert:
-            logger.warning(f'[Ethereum] Proposal has remained passed for {block_elapsed} blocks')
+        if tolerance == -1:
+            continue  # Ignore this resource
 
-    logger.debug('Checking passed Avalanche proposals')
+        eth_handler_address = current_state.eth_bridge.contract.functions._resourceIDToHandlerAddress(resource_id).call()
+        ava_handler_address = current_state.ava_bridge.contract.functions._resourceIDToHandlerAddress(resource_id).call()
 
-    for proposal in current_state.monitor.passed_proposals[ava_chain_id][:]:
-        current_proposal_state = fetch_proposal(current_state.ava_bridge, current_state.eth_bridge, proposal.deposit_nonce)
+        if eth_handler_address != ZERO_ADDRESS and ava_handler_address != ZERO_ADDRESS:
+            eth_handler = eth_web3.eth.contract(address=eth_handler_address, abi=handler_abi)
+            ava_handler = ava_web3.eth.contract(address=ava_handler_address, abi=handler_abi)
 
-        if current_proposal_state.status != proposal.status:
-            current_state.monitor.passed_proposals[ava_chain_id].remove(proposal)
-            continue
+            eth_token_address = eth_handler.functions._resourceIDToTokenContractAddress(resource_id).call()
+            ava_token_address = ava_handler.functions._resourceIDToTokenContractAddress(resource_id).call()
 
-        block_elapsed = ava_latest_block - current_proposal_state.proposed_block
+            eth_token = eth_web3.eth.contract(address=eth_token_address, abi=erc20_abi)
+            ava_token = ava_web3.eth.contract(address=ava_token_address, abi=erc20_abi)
 
-        if block_elapsed >= passed_proposal_block_alert:
-            logger.warning(f'[Avalanche] Proposal has remained passed for {block_elapsed} blocks')
+            eth_balance = eth_token.functions.balanceOf(eth_handler_address).call()
+            ava_balance = ava_token.functions.totalSupply().call()
+
+            if abs(eth_balance - ava_balance) > tolerance:
+                difference = max(eth_balance, ava_balance) - min(eth_balance, ava_balance)
+
+                if resource_id in current_state.monitor.imbalance_alerts:
+                    if current_state.monitor.imbalance_alerts[resource_id] == difference:
+                        continue  # Don't alert if the difference hasn't changed
+
+                current_state.monitor.imbalance_alerts[resource_id] = difference
+
+                eth_name = eth_token.functions.name().call()
+                ava_name = ava_token.functions.name().call()
+
+                eth_symbol = eth_token.functions.symbol().call()
+                ava_symbol = ava_token.functions.symbol().call()
+
+                eth_decimals = eth_token.functions.decimals().call()
+                ava_decimals = ava_token.functions.decimals().call()
+
+                data = {
+                    'resource': resource_id,
+                    'raw_difference': difference,
+                    'difference': difference / (10**eth_decimals),
+                    'eth': {
+                        'name': eth_name,
+                        'symbol': eth_symbol,
+                        'decimals': eth_decimals,
+                        'balance': eth_balance / (10**eth_decimals),
+                        'raw_balance': eth_balance
+                    },
+                    'ava': {
+                        'name': ava_name,
+                        'symbol': ava_symbol,
+                        'decimals': ava_decimals,
+                        'totalSupply': ava_balance / (10**ava_decimals),
+                        'raw_total_supply': ava_balance
+                    }
+                }
+
+                log_alert(f'Token {ava_name} (Ethereum Name: {eth_name}) has imbalance!', AlertType.Imbalance, data)
+            elif resource_id in current_state.monitor.imbalance_alerts:
+                del current_state.monitor.imbalance_alerts[resource_id]
+        else:
+            log_alert(f'Got zero address for resourceId {resource_id}', AlertType.Internal)
 
 
 @script('monitor')
 def execute():
+    config_file = Path('config.ini')
+    with open(str(config_file.absolute()), mode='r') as f:
+        config_data = f.read()
+
     config = configparser.ConfigParser()
     config.read_string(config_data)
 
@@ -473,21 +662,10 @@ def execute():
 
     logger = logging.getLogger('WATCHER')
 
-    addresses = config['monitor']['addresses'].split(',')
-    multisig_only = config['monitor']['multisig_only_addresses'].split(',')
-    eth_multisig_address = config['monitor']['eth_multisig_address']
-    ava_multisig_address = config['monitor']['ava_multisig_address']
     eth_bridge_address = config['monitor']['eth_bridge_address']
     ava_bridge_address = config['monitor']['ava_bridge_address']
-    eth_start_block = int(config['monitor']['eth_start_block'])
-    ava_start_block = int(config['monitor']['ava_start_block'])
-    eth_end_block = config['monitor']['eth_end_block']
-    ava_end_block = config['monitor']['ava_end_block']
     eth_rpc_url = config['monitor']['eth_rpc_url']
     ava_rpc_url = config['monitor']['ava_rpc_url']
-    output_csv = bool(config['monitor']['output_csv'])
-    output_json = bool(config['monitor']['output_json'])
-    output_stdout = bool(config['monitor']['output_stdout'])
     sleep_time = int(config['monitor']['sleep_time'])
     eth_chain_id = int(config['monitor']['eth_chain_id'])
     ava_chain_id = int(config['monitor']['ava_chain_id'])
@@ -513,9 +691,32 @@ def execute():
 
     state = State(monitor=monitor_state, eth_bridge=eth_bridge, ava_bridge=ava_bridge, config=config)
 
+    eth_fromBlock = 'latest'
+    ava_fromBlock = 'latest'
+
     try:
         while True:
+            logger.debug("Setting up Proposal Voted Event filter on Ethereum")
+
+            eth_vote_event_filter = eth_bridge.contract.events.ProposalVote.createFilter(fromBlock=eth_fromBlock, toBlock='latest')
+            ava_vote_event_filter = ava_bridge.contract.events.ProposalVote.createFilter(fromBlock=ava_fromBlock, toBlock='latest')
+
+            logger.debug("Checking ProposalVote event filters")
+            check_vote_event(state, eth_vote_event_filter)
+            check_vote_event(state, ava_vote_event_filter)
+
+            eth_fromBlock = eth_web3.eth.block_number
+            ava_fromBlock = ava_web3.eth.block_number
+
+            logger.debug("Scanning for new proposals")
+
             new_proposals = find_all_new_proposals(state)
+
+            logger.debug(f"Got {len(new_proposals['1'])} new Ethereum proposals and {len(new_proposals['2'])} new Avalanche proposals")
+
+            logger.debug("Checking for imbalances")
+
+            check_for_imbalances(state)
 
             logger.debug("Looking for expired proposals")
 
@@ -537,11 +738,17 @@ def execute():
 
             check_passed_proposals(state)
 
+            logger.debug("Saving current state")
+
+            state.monitor.save()
+
             logger.debug(f"Restarting loop in {sleep_time} seconds")
 
             time.sleep(sleep_time)
     except KeyboardInterrupt:
         pass
+    finally:
+        state.monitor.save()
 
 
 
