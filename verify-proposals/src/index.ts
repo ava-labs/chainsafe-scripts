@@ -117,21 +117,34 @@ async function findFailedProposals(originName: string, destinationName: string,
                     let handlerAddress = await originBridge._resourceIDToHandlerAddress(proposal._resourceID);
 
                     let provider;
+                    let otherProvider;
+                    let network;
+                    let handlerToUse = destinationHandler;
                     if (originChangeID == ethChainId) {
                         provider = ethProvider;
+                        otherProvider = avaProvider;
+                        network = 'avalanche'
+                        m = '0x751e9AD7DdA35EC5217fc2D1951a5FFB0617eafE'
+                        b = '0x6460777cDa22AD67bBb97536FFC446D65761197E'
                     } else {
+                        network = 'ethereum';
                         provider = avaProvider;
+                        otherProvider = ethProvider;
                     }
 
                     let originHandler = new ethers.Contract(handlerAddress, handler_abi, provider);
+                    let dstnHandler = new ethers.Contract(destinationHandler, handler_abi, otherProvider);
+                    
+                    let dstTokenAddress = await dstnHandler._resourceIDToTokenContractAddress(proposal._resourceID);
+                    let depositRecord = await originHandler.getDepositRecord(noince, destinationChainID);
 
-                    let depositRecord = await originHandler.getDepositRecord()
+                    let command = 'cb-sol-cli admin safe-withdraw --url $CBM_URL --privateKey $CB_PK_OWNER --gasPrice gasPrice --multiSig ' + m + ' --bridge ' + b + ' --tokenContract ' + dstTokenAddress + ' --recipient ' + depositRecord._destinationRecipientAddress + ' --handler ' + handlerToUse + ' --amountOrId ' + depositRecord._amount + ' --networkType ' + network + ' --network mainnet --approve'
 
                     return {
                         'proposal_status': proposal._status,
                         'origin_block_number': originBlockNumber,
-                        'deposit_tx': depositTx,
-                        'command': 'cb-sol-cli admin safe-withdraw --url $CBM_URL --privateKey $CB_PK_OWNER --gasPrice gasPrice --multiSig ' + m + ' --bridge ' + b + ' --tokenContract '
+                        'deposit_tx': depositTxHash,
+                        'command': command
                     }
                 }
 
@@ -165,10 +178,18 @@ async function main() {
         ]);
         console.log("Collecting all data");
 
-        const results = tempResults[0].concat(tempResults[1]) as ObjectMap<any>[];
+        const allResults = tempResults[0].concat(tempResults[1]) as ObjectMap<any>[];
+
+        console.log("Filtering for non-expired results")
+        const results = allResults.filter(p => p.proposal_status != 4)
+
+        console.log("Filtering for expired results")
+        const expireResults = allResults.filter(p => p.proposal_status == 4)
 
         console.log("Creating JSON data")
         const json = JSON.stringify(results);
+
+        const json2 = JSON.stringify(expireResults);
 
         console.log("Creating CSV data");
         const csvWriter = createObjectCsvWriter({
@@ -191,6 +212,9 @@ async function main() {
 
         console.log("Writing JSON file");
         await fs.writeFile('results.json', json);
+        
+        console.log("Writing JSON2 file");
+        await fs.writeFile('results2.json', json2);
 
         console.log("Writing CSV file");
         await csvWriter.writeRecords(results);
