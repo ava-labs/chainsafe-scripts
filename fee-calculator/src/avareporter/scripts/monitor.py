@@ -113,6 +113,15 @@ class Bridge:
         }
 
 
+class BytesEncoder(json.JSONEncoder):
+    def default(self, o: Any) -> Any:
+        if isinstance(o, HexBytes):
+            return o.hex()
+        elif isinstance(o, bytes):
+            return HexBytes(o).hex()
+        return json.JSONEncoder.default(self, o)
+
+
 @dataclass
 class MonitorState:
     active_proposals: Dict[str, List[Proposal]]
@@ -133,7 +142,7 @@ class MonitorState:
             save_state.rename(backup_state)
 
         with open(str(save_state.absolute()), mode='w') as f:
-            json.dump(asdict(self), f)
+            json.dump(asdict(self), f, cls=BytesEncoder)
 
 
 @dataclass
@@ -142,15 +151,6 @@ class State:
     eth_bridge: Bridge
     ava_bridge: Bridge
     config: configparser.ConfigParser
-
-
-class BytesEncoder(json.JSONEncoder):
-    def default(self, o: Any) -> Any:
-        if isinstance(o, HexBytes):
-            return o.hex()
-        elif isinstance(o, bytes):
-            return HexBytes(o).hex()
-        return json.JSONEncoder.default(self, o)
 
 
 def load_or_new_state() -> MonitorState:
