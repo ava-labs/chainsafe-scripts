@@ -67,7 +67,8 @@ class AlertType(str, Enum):
     ProposalExpired = 'proposal_expired'
     ProposalNotVoted = 'proposal_not_voted'
     ProposalNotExecuted = 'proposal_not_executed'
-    Imbalance = 'imbalance'
+    EthImbalance = 'eth_network_imbalance'
+    AvaxImbalance = 'avax_network_imbalance'
     Internal = 'internal'
     ProposalVoted = 'proposal_voted'
 
@@ -623,7 +624,11 @@ def check_for_imbalances(current_state: State):
                     }
                 }
 
-                log_alert(f'Token {ava_name} (Ethereum Name: {eth_name}) has imbalance!', AlertType.Imbalance, data)
+                alert_type = AlertType.EthImbalance
+                if ava_balance > eth_balance:
+                    alert_type = AlertType.AvaxImbalance
+
+                log_alert(f'Token {ava_name} (Ethereum Name: {eth_name}) has imbalance!', alert_type, data)
             elif resource_id in current_state.monitor.imbalance_alerts:
                 del current_state.monitor.imbalance_alerts[resource_id]
         else:
@@ -694,8 +699,8 @@ def execute():
     eth_fromBlock = 'latest'
     ava_fromBlock = 'latest'
 
-    try:
-        while True:
+    while True:
+        try:
             logger.debug("Setting up Proposal Voted Event filter on Ethereum")
 
             eth_vote_event_filter = eth_bridge.contract.events.ProposalVote.createFilter(fromBlock=eth_fromBlock, toBlock='latest')
@@ -745,10 +750,11 @@ def execute():
             logger.debug(f"Restarting loop in {sleep_time} seconds")
 
             time.sleep(sleep_time)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        state.monitor.save()
-
-
-
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            logger.error(e)
+            logger.error(f"Swallowing exception, sleeping for {sleep_time} seconds before trying again")
+            time.sleep(sleep_time)
+            continue
+    state.monitor.save()
