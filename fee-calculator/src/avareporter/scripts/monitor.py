@@ -551,6 +551,8 @@ def check_vote_event(state: State, event_filter):
 
 
 def check_for_imbalances(current_state: State):
+    logger = logging.getLogger('check_for_imbalances')
+
     tolerance_config_file = Path('imbalance.json')
     if tolerance_config_file.exists():
         with open(str(tolerance_config_file.absolute()), mode='r') as f:
@@ -583,6 +585,11 @@ def check_for_imbalances(current_state: State):
             eth_token = eth_web3.eth.contract(address=eth_token_address, abi=erc20_abi)
             ava_token = ava_web3.eth.contract(address=ava_token_address, abi=erc20_abi)
 
+            eth_name = eth_token.functions.name().call()
+            ava_name = ava_token.functions.name().call()
+
+            logger.debug(f"{eth_name} : {ava_name}")
+
             eth_balance = eth_token.functions.balanceOf(eth_handler_address).call()
             ava_balance = ava_token.functions.totalSupply().call()
 
@@ -594,9 +601,6 @@ def check_for_imbalances(current_state: State):
                         continue  # Don't alert if the difference hasn't changed
 
                 current_state.monitor.imbalance_alerts[resource_id] = difference
-
-                eth_name = eth_token.functions.name().call()
-                ava_name = ava_token.functions.name().call()
 
                 eth_symbol = eth_token.functions.symbol().call()
                 ava_symbol = ava_token.functions.symbol().call()
@@ -613,14 +617,16 @@ def check_for_imbalances(current_state: State):
                         'symbol': eth_symbol,
                         'decimals': eth_decimals,
                         'balance': eth_balance / (10**eth_decimals),
-                        'raw_balance': eth_balance
+                        'raw_balance': eth_balance,
+                        'token': eth_token_address,
                     },
                     'ava': {
                         'name': ava_name,
                         'symbol': ava_symbol,
                         'decimals': ava_decimals,
                         'totalSupply': ava_balance / (10**ava_decimals),
-                        'raw_total_supply': ava_balance
+                        'raw_total_supply': ava_balance,
+                        'token': ava_token_address,
                     }
                 }
 
