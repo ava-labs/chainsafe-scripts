@@ -585,8 +585,19 @@ def check_for_imbalances(current_state: State):
             eth_token = eth_web3.eth.contract(address=eth_token_address, abi=erc20_abi)
             ava_token = ava_web3.eth.contract(address=ava_token_address, abi=erc20_abi)
 
-            eth_name = eth_token.functions.name().call()
-            ava_name = ava_token.functions.name().call()
+            try:
+                eth_name = eth_token.functions.name().call()
+            except OverflowError as e:
+                logger.warning(f"Could not decode token name for Ethereum token contract ${eth_token_address}")
+                logger.error(e)
+                eth_name = "~Unknown~"
+
+            try:
+                ava_name = ava_token.functions.name().call()
+            except OverflowError as e:
+                logger.warning(f"Could not decode token name for Avalanche token contract ${ava_token_address}")
+                logger.error(e)
+                ava_name = "~Unknown~"
 
             eth_balance = eth_token.functions.balanceOf(eth_handler_address).call()
             ava_balance = ava_token.functions.totalSupply().call()
