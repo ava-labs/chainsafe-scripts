@@ -637,8 +637,8 @@ def check_for_imbalances(current_state: State):
                         'name': ava_name,
                         'symbol': ava_symbol,
                         'decimals': ava_decimals,
-                        'totalSupply': ava_balance / (10**ava_decimals),
-                        'raw_total_supply': ava_balance,
+                        'balance': ava_balance / (10**ava_decimals),
+                        'raw_balance': ava_balance,
                         'token': ava_token_address,
                     }
                 }
