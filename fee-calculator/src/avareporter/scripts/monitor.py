@@ -127,7 +127,6 @@ class BytesEncoder(json.JSONEncoder):
 class MonitorState:
     active_proposals: Dict[str, List[Proposal]]
     passed_proposals: Dict[str, List[Proposal]]
-    imbalance_alerts: Dict[str, int]
     resource_ids: List[str]
     ava_deposit_count: int = 0
     eth_deposit_count: int = 0
@@ -163,13 +162,13 @@ def load_or_new_state() -> MonitorState:
         }, passed_proposals={
             '1': [],
             '2': []
-        }, resource_ids=[], imbalance_alerts={})
+        }, resource_ids=[])
 
     with open(str(save_state.absolute()), mode='r') as f:
         data = json.load(f)
 
-    if 'imbalance_alerts' not in data:
-        data['imbalance_alerts'] = {}
+    if 'imbalance_alerts' in data:
+        del data['imbalance_alerts']
 
     return MonitorState(**data)
 
@@ -617,12 +616,6 @@ def check_for_imbalances(current_state: State):
             if abs(eth_balance - ava_balance) > tolerance:
                 difference = max(eth_balance, ava_balance) - min(eth_balance, ava_balance)
 
-                if resource_id in current_state.monitor.imbalance_alerts:
-                    if current_state.monitor.imbalance_alerts[resource_id] == difference:
-                        continue  # Don't alert if the difference hasn't changed
-
-                current_state.monitor.imbalance_alerts[resource_id] = difference
-
                 eth_symbol = eth_token.functions.symbol().call()
                 ava_symbol = ava_token.functions.symbol().call()
 
@@ -656,8 +649,6 @@ def check_for_imbalances(current_state: State):
                     alert_type = AlertType.AvaxImbalance
 
                 log_alert(f'Token {ava_name} (Ethereum Name: {eth_name}) has imbalance!', alert_type, data)
-            elif resource_id in current_state.monitor.imbalance_alerts:
-                del current_state.monitor.imbalance_alerts[resource_id]
         else:
             log_alert(f'Got zero address for resourceId {resource_id}', AlertType.Internal)
 
