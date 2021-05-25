@@ -588,10 +588,12 @@ def check_for_imbalances(current_state: State):
             eth_name = eth_token.functions.name().call()
             ava_name = ava_token.functions.name().call()
 
-            logger.debug(f"{eth_name} : {ava_name}")
-
             eth_balance = eth_token.functions.balanceOf(eth_handler_address).call()
             ava_balance = ava_token.functions.totalSupply().call()
+
+            if eth_balance == 0:
+                eth_balance = eth_token.functions.totalSupply().call()
+                ava_balance = ava_token.functions.balanceOf(ava_handler_address).call()
 
             if abs(eth_balance - ava_balance) > tolerance:
                 difference = max(eth_balance, ava_balance) - min(eth_balance, ava_balance)
