@@ -22,6 +22,7 @@ from avareporter.cli import script
 import logging
 from logging.config import fileConfig
 from logging.config import dictConfig
+import requests
 
 CHAIN_NAMES = {
     1: 'Ethereum',
@@ -698,10 +699,13 @@ def execute():
     eth_handler = config['monitor']['eth_handler']
     ava_handler = config['monitor']['ava_handler']
 
+    eth_session = requests.Session()
+    ava_session = requests.Session()
+
     logger.debug('Connecting to ETH Web3')
-    eth_web3 = Web3(Web3.HTTPProvider(eth_rpc_url))
+    eth_web3 = Web3(Web3.HTTPProvider(eth_rpc_url, session=eth_session))
     logger.debug('Connecting to AVA Web3')
-    ava_web3 = Web3(Web3.HTTPProvider(ava_rpc_url))
+    ava_web3 = Web3(Web3.HTTPProvider(ava_rpc_url, session=ava_session))
 
     logger.debug('Building contract instances')
     eth_bridge_contract = eth_web3.eth.contract(address=eth_bridge_address, abi=bridge_abi)
