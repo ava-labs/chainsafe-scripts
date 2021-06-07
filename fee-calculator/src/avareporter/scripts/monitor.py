@@ -6,7 +6,7 @@ from enum import Enum
 from functools import partial
 from multiprocessing import Pool
 from multiprocessing.pool import ThreadPool
-from typing import List, Set, Dict, Optional, Any
+from typing import List, Set, Dict, Optional, Any, Iterable
 from pathlib import Path
 
 import requests
@@ -23,6 +23,7 @@ import logging
 from logging.config import fileConfig
 from logging.config import dictConfig
 import requests
+from web3.types import EventData
 
 CHAIN_NAMES = {
     1: 'Ethereum',
@@ -190,11 +191,9 @@ def fetch_proposal(origin_bridge: Bridge, destination_bridge: Bridge, nonce: int
 
         raw_proposal = destination_bridge.contract.functions.getProposal(origin_bridge.chain_id, nonce, hash.hex()).call()
 
-        event_filter = origin_bridge.contract.events.Deposit.createFilter(fromBlock=0, toBlock='latest', argument_filters={
+        events = origin_bridge.contract.events.Deposit.getLogs(fromBlock=0, toBlock='latest', argument_filters={
             'depositNonce': nonce
         })
-
-        events = event_filter.get_all_entries()
 
         temp_proposal = Proposal(
             resource_id=raw_proposal[0],
@@ -536,8 +535,8 @@ def check_passed_proposals(current_state: State):
         logger.debug("Not watching any Avalanche proposals")
 
 
-def check_vote_event(state: State, event_filter):
-    for event in event_filter.get_new_entries():
+def check_vote_event(state: State, event_filter: Iterable[EventData]):
+    for event in event_filter:
         nonce = event.args.depositNonce
         origin = event.args.originChainID
         destination = 1 if origin == 2 else 2
@@ -727,19 +726,19 @@ def execute():
         try:
             logger.debug("Setting up Proposal Voted Event filter on Ethereum")
 
-            eth_vote_event_filter = eth_bridge.contract.events.ProposalVote.createFilter(fromBlock=eth_fromBlock, toBlock='latest')
-            ava_vote_event_filter = ava_bridge.contract.events.ProposalVote.createFilter(fromBlock=ava_fromBlock, toBlock='latest')
+            eth_vote_events = eth_bridge.contract.events.ProposalVote.getLogs(fromBlock=eth_fromBlock, toBlock='latest')
+            ava_vote_events = ava_bridge.contract.events.ProposalVote.getLogs(fromBlock=ava_fromBlock, toBlock='latest')
 
             try:
                 logger.debug("Checking Ethereum ProposalVote event filters")
-                check_vote_event(state, eth_vote_event_filter)
+                check_vote_event(state, eth_vote_events)
             except Exception as e:
                 logger.error("Failed to grab Ethereum ProposalVote event filters")
                 logger.exception(e)
 
             try:
                 logger.debug("Checking Avalanche ProposalVote event filters")
-                check_vote_event(state, ava_vote_event_filter)
+                check_vote_event(state, ava_vote_events)
             except Exception as e:
                 logger.error("Failed to grab Avalanche ProposalVote event filters")
                 logger.exception(e)
