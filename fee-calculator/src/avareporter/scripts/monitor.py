@@ -727,10 +727,19 @@ def execute():
             eth_vote_event_filter = eth_bridge.contract.events.ProposalVote.createFilter(fromBlock=eth_fromBlock, toBlock='latest')
             ava_vote_event_filter = ava_bridge.contract.events.ProposalVote.createFilter(fromBlock=ava_fromBlock, toBlock='latest')
 
-            logger.debug("Checking Ethereum ProposalVote event filters")
-            check_vote_event(state, eth_vote_event_filter)
-            logger.debug("Checking Avalanche ProposalVote event filters")
-            check_vote_event(state, ava_vote_event_filter)
+            try:
+                logger.debug("Checking Ethereum ProposalVote event filters")
+                check_vote_event(state, eth_vote_event_filter)
+            except Exception as e:
+                logger.error("Failed to grab Ethereum ProposalVote event filters")
+                logger.exception(e)
+
+            try:
+                logger.debug("Checking Avalanche ProposalVote event filters")
+                check_vote_event(state, ava_vote_event_filter)
+            except Exception as e:
+                logger.error("Failed to grab Avalanche ProposalVote event filters")
+                logger.exception(e)
 
             eth_fromBlock = eth_web3.eth.block_number
             ava_fromBlock = ava_web3.eth.block_number
