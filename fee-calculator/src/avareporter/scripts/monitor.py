@@ -699,11 +699,10 @@ def execute():
     eth_handler = config['monitor']['eth_handler']
     ava_handler = config['monitor']['ava_handler']
 
-    eth_session = requests.Session()
     ava_session = requests.Session()
 
     logger.debug('Connecting to ETH Web3')
-    eth_web3 = Web3(Web3.HTTPProvider(eth_rpc_url, session=eth_session))
+    eth_web3 = Web3(Web3.HTTPProvider(eth_rpc_url))
     logger.debug('Connecting to AVA Web3')
     ava_web3 = Web3(Web3.HTTPProvider(ava_rpc_url, session=ava_session))
 
