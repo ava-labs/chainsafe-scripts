@@ -609,6 +609,9 @@ def check_for_imbalances(current_state: State):
             eth_balance = eth_token.functions.balanceOf(eth_handler_address).call()
             ava_balance = ava_token.functions.totalSupply().call()
 
+            if eth_balance == 0 and ava_balance == 0:
+                continue
+
             if eth_balance == 0:
                 eth_balance = eth_token.functions.totalSupply().call()
                 ava_balance = ava_token.functions.balanceOf(ava_handler_address).call()
